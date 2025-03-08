@@ -1,0 +1,685 @@
+import cv2
+from math import cos,sin,pi,atan2,degrees
+import numpy as np
+import time
+from threading import Thread
+
+# MADE BY KELVIN LE, QUT EGB320 GROUP16 
+# StudentID: n11429984
+# Email: minhnguyen.le@qut.edu.au
+
+class VisionModule:
+    # These are the HSV ranges for VREP simulator 
+    ground_points = np.float32([[-18,47],[18,47],[-18,150],[18,150]]) #off-set in cm
+    homography_matrix = np.array([
+        [-7.73039868e-02,  2.00156817e-03,  1.57873817e+01],
+        [ 4.01631512e-03,  9.61779803e-02, -4.69479396e+01],
+        [-1.78754520e-05, -6.23500700e-03,  1.00000000e+00]
+    ])
+
+
+    color_ranges = {
+            'floor': (np.array([0, 0, 80]), np.array([0, 0, 135])),
+            'wall': (np.array([0, 0, 146]), np.array([30, 1, 255])),
+            'blue': (np.array([116, 90,0]), np.array([121, 189, 121])),
+            'black': (np.array([0, 0, 0]), np.array([0, 0, 0])),
+            'yellow': (np.array([3, 194, 0]), np.array([29, 255, 255])),
+            'green': (np.array([52, 100, 0]), np.array([73, 177, 153])),
+            'orange1': (np.array([0, 121, 0]), np.array([4, 255, 255])),
+            'orange2': (np.array([165, 150, 150]), np.array([180, 255, 255])),
+		}
+
+    focal_length = 40 #cm
+    real_circle_diameter = 70 #cm
+
+    def __init__(self):
+        self.cap = None  # Initialize the camera object as an instance variable
+        self.t1 = None
+
+
+    def draw_crosshair(self, frame, color=(0, 255, 0), thickness=2):
+        # Get the dimensions of the frame
+        height, width = frame.shape[:2]
+        
+        # Calculate the center of the frame
+        center_x = width // 2
+        center_y = height // 2
+        FrameCenter = (center_x, center_y)
+        # Define the length of the crosshair arms
+        crosshair_length = 5
+        
+        # Draw the vertical line of the crosshair
+
+        cv2.drawMarker(frame, FrameCenter, color, markerType=cv2.MARKER_CROSS, markerSize=10, thickness=2)
+        # Draw the horizontal line of the crosshair
+        return FrameCenter
+
+    def convert_image(self,img):
+        img = np.reshape((np.array(img).astype(np.uint8)), (480,640,3))
+        return cv2.flip(cv2.cvtColor(img, cv2.COLOR_BGR2RGB), 0)
+
+    def CaptureImage(self):
+        self.resolution, self.image = packerBotSim.GetCameraImage()
+        self.frame = convert_image(self.image)
+        self.frame = cv2.resize(self.frame, (320, 240))
+        return self.frame
+
+
+    def initialize_camera(self, frame_width=820, frame_height=616, format='XRGB8888'):
+        # Create a camera object and store it as an instance variable
+        self.cap = picamera2.Picamera2()
+        config = self.cap.create_video_configuration(main={"format": format, "size": (frame_width, frame_height)})
+        self.cap.configure(config)
+   
+        
+        #self.cap.set_controls({"ExposureTime": 11000, "AnalogueGain": 1.5,  "ColourGains": (1.22,2.12)})
+        self.cap.set_controls({"ExposureTime": 70000, "AnalogueGain": 1,  "ColourGains": (1.4,1.5)}) 
+        #self.cap.set_controls({"ExposureTime": 100000, "AnalogueGain": 1.0, "ColourGains": (1.4,1.5)})
+        #self.cap.set_controls({"ExposureTime": 70000, "AnalogueGain": 1,  "ColourGains": (1.4,1.5)}) 
+        self.image_width = frame_width
+        self.image_center = self.image_width // 2 # Calculate the center of the image
+        self.cap.start()
+
+    def Capturing(self):
+        self.t1 = time.time()  # For measuring FPS
+        img = self.CaptureImage()  # Capture a single image frame
+        imgHSV = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)  # Convert to HSV
+        #imgHSV = cv2.erode(imgHSV, kernel, iterations=1)
+        #imgHSV = cv2.dilate(imgHSV, kernel, iterations=1)
+        robotview = img.copy()  # Preserve the original image
+        return img, imgHSV, robotview
+
+    def ExportImage(self, WindowName, view, FPS=False):
+        if FPS:
+            fps = 1.0 / (time.time() - self.t1)  # calculate frame rate
+            cv2.putText(view, f'{int(fps)}', (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 100), 2)  # Display the FPS on the screen
+
+        cv2.imshow(WindowName, view)
+
+    def findBlack(self, imgHSV):
+        # Create masks for the orange color
+        #HSV90 = cv2.rotate(imgHSV, cv2.ROTATE_180)
+        BlackMask = cv2.inRange(imgHSV, self.color_ranges['black'][0], self.color_ranges['black'][1])
+        #contoursBlack, _ = cv2.findContours(ItemMask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        return BlackMask
+
+
+    def findWall(self, imgHSV, imgRGB):
+        # Create masks for the orange color
+        WallMask = cv2.inRange(imgHSV, self.color_ranges['wall'][0], self.color_ranges['wall'][1])
+        
+        # Find contours in the mask
+        contoursWall1, _ = cv2.findContours(WallMask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        # Check if any contours are found
+        if contoursWall1:
+            # Find the largest contour
+            largest_contour = max(contoursWall1, key=cv2.contourArea)
+            
+            # Create an empty mask and draw the largest contour on it
+            filledWallMask = np.zeros_like(WallMask)
+            cv2.drawContours(filledWallMask, [largest_contour], -1, (255), thickness=cv2.FILLED)
+            
+            # Apply Gaussian blur to the filled mask
+            filledWallMask = cv2.GaussianBlur(filledWallMask, (9, 9), 2)
+            
+            # Use the filled mask to extract the wall image
+            WallImg = cv2.bitwise_and(imgRGB, imgRGB, mask=filledWallMask)
+            
+            # Convert the extracted image to grayscale
+            WallImgGray = cv2.cvtColor(WallImg, cv2.COLOR_BGR2GRAY)
+        else:
+            # No contours found, return original image and empty mask
+            WallImg = np.zeros_like(imgRGB)
+            WallImgGray = np.zeros_like(cv2.cvtColor(imgRGB, cv2.COLOR_BGR2GRAY))
+            filledWallMask = np.zeros_like(WallMask)
+        
+        return WallImg, WallImgGray, filledWallMask
+
+
+    def findMarkers(self, WallImgGray, WallMask):
+        _, mask = cv2.threshold(WallImgGray, 110, 255, cv2.THRESH_BINARY_INV)
+        markers = cv2.bitwise_and(WallMask, mask)
+        _, mask1 = cv2.threshold(markers, 110, 255, cv2.THRESH_BINARY)
+        ContoursMarkers, _ = cv2.findContours(mask1, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        return ContoursMarkers, mask1
+
+
+
+    def findItems(self, imgHSV):
+        # Create masks for the orange color
+        ItemMask1 = cv2.inRange(imgHSV, self.color_ranges['orange1'][0], self.color_ranges['orange1'][1])
+        ItemMask2 = cv2.inRange(imgHSV, self.color_ranges['orange2'][0], self.color_ranges['orange2'][1])
+        ItemMask = ItemMask1 | ItemMask2  # Combine masks
+        contoursItem, _ = cv2.findContours(ItemMask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        return contoursItem, ItemMask
+
+    def findShelf(self, imgHSV, area_threshold=10000):
+        # Create a mask for the blue color range
+        ShelfMask = cv2.inRange(imgHSV, self.color_ranges['blue'][0], self.color_ranges['blue'][1])
+        
+        # Find contours on the mask
+        contoursShelf, _ = cv2.findContours(ShelfMask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        # Filter out small contours by area
+        filtered_contours = [cnt for cnt in contoursShelf if cv2.contourArea(cnt) > area_threshold]
+        
+        return contoursShelf, ShelfMask
+
+    def findLoadingArea(self, imgHSV):
+        LoadingAreaMask = cv2.inRange(imgHSV, self.color_ranges['yellow'][0], self.color_ranges['yellow'][1])
+        contoursLoadingArea, _ = cv2.findContours(LoadingAreaMask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        return contoursLoadingArea, LoadingAreaMask
+
+    def findObstacle(self, imgHSV):
+        ObstacleMask = cv2.inRange(imgHSV, self.color_ranges['green'][0], self.color_ranges['green'][1])
+        contoursObstacle, _ = cv2.findContours(ObstacleMask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        return contoursObstacle, ObstacleMask
+    
+    # Function to check contour circularity
+
+    def MarkerShapeDetection(self, contoursMarkers, output,image):
+        detected = False
+        shapeCount = 0
+        distances = []  # List to store distances for all detected circles
+        bearings = []   # List to store bearings for all detected circles
+
+        for contour in contoursMarkers:
+            if (1 < cv2.contourArea(contour) < 50000):  # Area filter
+                epsilon = 0.03 * cv2.arcLength(contour, True)
+                ShapeContours = cv2.approxPolyDP(contour, epsilon, True)
+                #num_vertices = len(ShapeContours)
+                num_vertices = 8
+                print(num_vertices)
+                print(shapeCount, "markers detected")
+
+                #if num_vertices == 4:
+                    #shape = "Square"
+                if num_vertices in [4, 12]:  # Avoiding conflict with squares
+                    shapeCount += 1
+                    print(shapeCount, "circle detected")
+                    shape = "Circle"
+
+                    # Find the center and radius of the circle
+                    (x_center, y_center), radius = cv2.minEnclosingCircle(contour)
+                    diameter = 2 * radius
+
+                    # Calculate distance and bearing
+                    distance = self.GetDistance(diameter, 70)/100
+                    bearing = self.GetBearing(x_center,image)/100
+
+                    distances.append(distance)  # Store each distance
+                    bearings.append(bearing)    # Store each bearing
+
+                    # Draw text and circle on the output image
+                    cv2.putText(output, f"Distance: {distance:.2f} cm", 
+                                (int(x_center), int(y_center)), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (123, 200, 100), 2)
+                    cv2.putText(output, f"Circle: {shapeCount}", 
+                                (int(x_center), int(y_center) - 10), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 100, 100), 2)
+                    cv2.circle(output, (int(x_center), int(y_center)), 
+                            int(radius), (0, 255, 0), 2)
+
+                    detected = True
+
+        if detected:
+            return shapeCount, distances, bearings  # Return list of distances and bearings
+        else:
+            return 0, [], []  # Return zero shapes, and empty lists for distances and bearings
+
+
+
+        
+    def GetContoursShelf(self, contours, output, colour, text, Draw=True, min_area=1000):
+        detected_centers = []  # List to store the centers of detected shelves
+        
+        for contour in contours:
+            if cv2.contourArea(contour) > min_area:
+                # Calculate the contour's center using moments
+                M = cv2.moments(contour)
+                if M['m00'] != 0:  # Avoid division by zero
+                    center = (int(M['m10'] / M['m00']), int(M['m01'] / M['m00']))
+                else:
+                    center = (0, 0)
+
+                if Draw:
+                    # Draw the contour
+                    cv2.drawContours(output, [contour], -1, colour, 1)
+                    
+                    # Draw the text at the center of the contour
+                    cv2.putText(output, text, center, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                
+                # Store the detected center
+                detected_centers.append(center)
+
+        # Return the list of detected centers, or None if no contours are detected
+        if detected_centers:
+            return detected_centers
+        else:
+            return None
+
+    def GetContoursMarkers(self, contours, output, colour, text, Draw=True, min_area=1000):
+        detected_centers = []  # List to store the centers of detected shelves
+        
+        for contour in contours:
+            if cv2.contourArea(contour) > min_area:
+                # Calculate the contour's center using moments
+                M = cv2.moments(contour)
+                if M['m00'] != 0:  # Avoid division by zero
+                    center = (int(M['m10'] / M['m00']), int(M['m01'] / M['m00']))
+                else:
+                    center = (0, 0)
+
+                if Draw:
+                    # Draw the contour
+                    cv2.drawContours(output, [contour], -1, colour, 1)
+                    
+                    # Draw the text at the center of the contour
+                    cv2.putText(output, text, center, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                
+                # Store the detected center
+                detected_centers.append(center)
+
+        # Return the list of detected centers, or None if no contours are detected
+        if detected_centers:
+            return detected_centers
+        else:
+            return None
+    def GetInfoShelf(self, robotview, ShelfCenters, imgRGB):
+        bearing = []
+        center = []
+        if ShelfCenters is not None:
+# Loop through each detected shelf center
+            for ShelfCenter in ShelfCenters:
+                    x_center, y_center = ShelfCenter
+                    cen = (x_center, y_center)
+                    # Calculate the bearing (angle) for each shelf
+                    ShelfAngle = self.GetBearing(x_center, imgRGB)
+                    bearing.append(ShelfAngle)
+                    center.append(cen)
+                    # Display the angle on the image
+                    cv2.putText(robotview, f"A: {int(ShelfAngle)}", (int(x_center), int(y_center)), 
+                                          cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 200, 200), 1)
+        return center, bearing
+    
+        
+    def GetInfoObject(self, robotview, detected_obstacles, imgRGB):
+        distance = []
+        bearing = []
+        centers = []
+        
+        if detected_obstacles is not None:
+            # Loop through each detected obstacle and process it
+            for obstacle in detected_obstacles:
+                x_ObstacleCenter, y_ObstacleCenter, ObHeight, ObWidth = obstacle
+                
+                # Calculate the obstacle's angle and distance
+                ObstacleAngle = self.GetBearing(x_ObstacleCenter, imgRGB)/100
+                ObstacleDistance = self.GetDistance(ObHeight, 140)/100
+                if abs(ObstacleAngle) < 0.32: # Ignore obstacles close to the FOV edge
+                    distance.append(ObstacleDistance)
+                    bearing.append(ObstacleAngle)
+                    centers.append((x_ObstacleCenter, y_ObstacleCenter))
+                
+                # Add the angle and distance information to the image
+                cv2.putText(robotview, f"A: {int(ObstacleAngle*100)} deg", (int(x_ObstacleCenter), int(y_ObstacleCenter + ObHeight / 2)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (237, 110, 255), 1)
+                cv2.putText(robotview, f"D: {int(ObstacleDistance*100)} m", (int(x_ObstacleCenter), int(y_ObstacleCenter)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 100, 100), 1)
+
+        # Return a list of [distance, bearing] pairs
+        return [[d, b] for d, b in zip(distance, bearing)], centers
+
+    
+    def GetInfoMarkers(self, robotview, ContoursMarkers, imgRGB):
+        distance = []
+        bearing = []
+        centers = []
+
+        for contours in ContoursMarkers:
+            if cv2.contourArea(contours) > 100:
+                (x, y), radius = cv2.minEnclosingCircle(contours)
+                center = (int(x), int(y))
+                circle_area = np.pi * (radius ** 2)
+                contour_area = cv2.contourArea(contours)
+                
+                # Define the acceptable difference threshold
+                area_difference_threshold = 5000  # You can adjust this value
+
+                # Check if the difference between areas is within the threshold
+                if abs(contour_area - circle_area) <= area_difference_threshold:
+                    MarkerAngle = self.GetBearing(x, imgRGB)
+                    MarkerDistance = self.GetDistance(radius * 2, 70)
+                    cv2.circle(robotview, center, int(radius), (255, 255), 2)
+                    cv2.drawMarker(robotview, center, (0, 0, 255), markerType=cv2.MARKER_CROSS, markerSize=5, thickness=2)
+                    cv2.putText(robotview, f"M", (int(x - 6), int(y + radius / 2)), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255))
+                    
+                    # Store the distance, bearing, and center
+                    distance.append(MarkerDistance)
+                    bearing.append(MarkerAngle)
+                    centers.append(center)
+
+        # Calculate the average center if there are any centers
+        if centers:
+            avg_x = sum([c[0] for c in centers]) / len(centers)
+            avg_y = sum([c[1] for c in centers]) / len(centers)
+            avg_center = (int(avg_x), int(avg_y))
+            avg_distance = (sum(distance) / len(distance))
+            avg_bearing = (sum(bearing) / len(bearing))
+            shape_count = len(centers)
+            cv2.drawMarker(robotview, avg_center, (0, 0, 255), markerType=cv2.MARKER_CROSS, markerSize=5, thickness=2)
+            cv2.putText(robotview, f"A: {int(avg_bearing)} deg", (int(avg_x), int(avg_y + 20)), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (237, 110, 255), 1)
+            cv2.putText(robotview, f"D: {int(avg_distance)} cm", (int(avg_x), int(avg_y)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 100, 100), 1)
+            # cv2.putText(robotview, f"{shape_count}", (int(avg_x - 10), int(avg_y)),
+            #             cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+        else:
+            avg_center = None  # If no centers were found, return None or a default value
+            avg_bearing = None
+            avg_distance = None
+            shape_count = 0
+
+        return avg_center, avg_bearing, avg_distance, shape_count
+
+
+   
+    
+    def GetContoursObject(self, contours, output, colour, text, Draw=True):
+        detected_objects = []  # List to store detected object info
+        
+        for contour in contours:
+            if cv2.contourArea(contour) > 50:
+                x, y, width, height = cv2.boundingRect(contour)
+                
+                if Draw:
+                    cv2.rectangle(output, (x, y), (x + width, y + height), colour, 1)
+                    cv2.putText(output, text, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                
+                # Calculate center
+                x_center, y_center = x + width // 2, y + height // 2
+                
+                # Append this object's properties to the list
+                detected_objects.append((x_center, y_center, height, width))
+        
+        # Return list of detected objects
+        if detected_objects:
+            return detected_objects
+        else:
+            return None
+
+
+
+
+    def GetContoursMarker(self, contours, output, colour, text, Draw=True):
+        detected_objects = []  # List to store detected object info
+        
+        for contour in contours:
+            if cv2.contourArea(contour) > 50:
+                # Get the minimum enclosing circle for the contour
+                (x_center, y_center), radius = cv2.minEnclosingCircle(contour)
+                x_center, y_center = int(x_center), int(y_center)
+                radius = int(radius)
+                
+                if Draw:
+                    # Draw the circle around the detected object
+                    cv2.circle(output, (x_center, y_center), radius, colour, 2)
+                    
+                    # Draw the text at the center of the circle
+                    cv2.putText(output, text, (x_center, y_center - radius - 10), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                
+                # Append this object's properties to the list (center and radius)
+                detected_objects.append((x_center, y_center, radius))
+        
+        # Return list of detected objects
+        if detected_objects:
+            return detected_objects
+        else:
+            return None
+
+    def is_edge_line(self,pt1, pt2, image_width, image_height):
+        """Check if the line touches the edges of the frame."""
+        x1, y1 = pt1
+        x2, y2 = pt2
+
+        # If both points lie on the image boundary (edges), consider it an edge line
+        if (x1 == 0 or x1 == image_width-1 or y1 == 0 or y1 == image_height-1) and (x2 == 0 or x2 == image_width-1 or y2 == 0 or y2 == image_height-1):
+            return True
+        return False
+
+
+    def get_line_angle_degrees(self, vec):
+        # Calculate the angle of the line relative to the horizontal
+        dx, dy = vec  # Take the coordinates of the vector
+        angle_radians = atan2(dy, dx)  # Calculate the angle in radians
+        angle_degrees = degrees(angle_radians)  # Convert to degrees
+        return angle_degrees
+
+
+    def ProcessShelfCorners(self, contours, robotview, draw=True):
+        lines = []  # To store the lines and their lengths
+        image_height, image_width = robotview.shape[:2]  # Get image dimensions
+
+        # Lists to store different types of corners
+        fake_corners = []
+        away_corners = []
+        facing_corners = []
+        further_edge_corners = []  # New list to store bottom points of away corners
+
+        for contour in contours:
+            epsilon = 5  # Adjust this value based on your needs
+            approx = cv2.approxPolyDP(contour, epsilon, True)
+
+            # Only consider contours with at least 4 points
+            if len(approx) >= 4:
+                # Collect line segments and their lengths
+                for i in range(len(approx)):
+                    pt0 = approx[(i - 1 + len(approx)) % len(approx)][0]
+                    pt1 = approx[i][0]  # Point1 of the line
+                    pt2 = approx[(i + 1) % len(approx)][0]  # Wrap around to the first point
+
+                    # Use pt1 as the "origin" for these vectors
+                    v10 = pt0 - pt1
+                    v12 = pt2 - pt1
+
+                    # Get signed angle of each and check if they are vertical
+                    ang1 = self.get_line_angle_degrees(v10)
+                    ang2 = self.get_line_angle_degrees(v12)
+                    theta = abs(ang2 - ang1)
+                    vert1 = 70 < abs(ang1) < 110
+                    vert2 = 70 < abs(ang2) < 110
+
+                    # Discard if line2 is pointing too far to the left or line1 is pointing too far to the right
+                    if abs(ang2) > 105 or abs(ang1) < 75:
+                        continue
+
+                    # Only Eliminate points that touch the edges of the image
+                    if self.is_edge_line(pt1, pt1, image_width, image_height):
+                        continue  # Skip this point if it touches the edge
+
+                    # Append (pt1, pt2, length) to the list
+                    lines.append((pt1, pt2))
+                    if draw:
+                        cv2.line(robotview, tuple(pt0), tuple(pt1), (0, 255, 0) if vert1 else (255, 0, 0), 2)
+                        cv2.line(robotview, tuple(pt1), tuple(pt2), (0, 255, 0) if vert2 else (255, 0, 0), 2)
+
+                    corner_type = ''
+
+                    # Discard corner if both are vertical
+                    if vert1 and vert2:
+                        continue
+
+                    if (not vert1) and (not vert2):
+                        # Both horizontal
+                        if ang1 > 0 and ang2 > 0:
+                            continue
+
+                        corner_type = 'Facing'
+                    else:
+                        # One Horizontal and one vertical
+                        if vert1:
+                            if ang2 < 0:
+                                continue
+                            if ang1 > 0:
+                                corner_type = 'Fake'
+                            else:
+                                corner_type = 'Away'
+                        elif vert2:
+                            if ang1 < 0:
+                                continue
+                            if ang2 > 0:
+                                corner_type = 'Fake'
+                            else:
+                                corner_type = 'Away'
+
+                    # Append corners to the respective lists based on their type
+                    if corner_type == 'Facing':
+                        facing_corners.append(tuple(pt1))  # Only store coordinates
+                    elif corner_type == 'Fake':
+                        fake_corners.append(tuple(pt1))  # Only store coordinates
+                    elif corner_type == 'Away':
+                        away_corners.append(tuple(pt1))  # Only store coordinates
+                        # Store the current pt1 (green line point) as further edge corner
+                        further_edge_corners.append(tuple(pt1))  # Store coordinates
+
+    # If drawing is enabled, display the corners on the image
+        if draw:
+            for point in facing_corners:
+                cv2.circle(robotview, tuple(point), 5, (255, 255, 255), -1)  # White circle for facing corners
+            for point in fake_corners:
+                cv2.circle(robotview, tuple(point), 5, (127, 127, 127), -1)  # Grey circle for fake corners
+            for point in away_corners:
+                cv2.circle(robotview, tuple(point), 5, (0, 0, 0), -1)  # Black circle for away corners
+            # Draw further edge corners
+            for point in further_edge_corners:
+                cv2.circle(robotview, tuple(point), 5, (255, 0, 255), -1)  # Magenta circle for further edge corners
+
+    # Return only the coordinates of the corners
+        return fake_corners, away_corners, facing_corners, further_edge_corners
+
+
+
+
+    
+    def GetDistance(self, width, real_width):
+        return (self.focal_length * real_width) / width + 4
+    
+    def GetBearing(self, x_center,image):
+        offset_pixels = -x_center + image.shape[1]/ 2
+        return (offset_pixels / image.shape[1]) * 70
+
+
+    def CalculateDistancePoints(self, point, output):
+        if point is not None:
+            # Transform the point using the homography matrix
+            pred_point = cv2.perspectiveTransform(np.float32(point).reshape(-1, 1, 2), self.homography_matrix)
+            
+            # Get the y-coordinate as the real-world distance (in cm)
+            real_points = int(pred_point[0][0][1])  # Assuming this represents distance in cm
+            
+            
+            # Add text showing the distance next to the point
+            distance_text = f"{real_points:.2f} cm"  # Format the distance to two decimal places
+            cv2.putText(output, distance_text, (int(point[0]) + 10, int(point[1]) - 10), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+            return real_points
+        else:
+            return None
+
+    
+    def find_furthest_point(self, corners, output):
+        image_height = output.shape[0]  # Get the height of the frame
+        furthest_point = None
+        max_distance = -1  # Initialize with a negative value to find the maximum distance
+
+        if corners:
+            for point in corners:  # Each point is already a tuple (x, y)
+                # Calculate the vertical distance from the bottom edge
+                distance_from_bottom = image_height - point[1]
+                
+                if distance_from_bottom > max_distance:
+                    max_distance = distance_from_bottom
+                    furthest_point = point  # Store the point as the furthest
+        if furthest_point is not None:
+            # Draw a circle around the furthest point
+            cv2.circle(output, tuple(map(int, furthest_point)), 5, (255, 255, 255), -1)  # Green circle for the furthest point
+
+        return furthest_point
+
+
+
+
+
+class CamFrameGrabber:
+      # FOV = number of degrees for camera view
+      def __init__(self, src, height, width):
+            self.camera = picamera2.Picamera2()
+            self.width = width
+            self.height = height
+
+            # Configure the camera
+            config = self.camera.create_video_configuration(main={"format": 'XRGB8888', "size": (height, width)})
+            self.camera.configure(config)
+            self.camera.set_controls({"ExposureTime": 70000, "AnalogueGain": 1,  "ColourGains": (1.4,1.5)}) 
+            self.camera.start()
+
+            self.cameraStopped = False
+            self.prev_frame_id = -1
+            self.frame_id = 0
+            self.currentFrame = np.zeros((height, width, 3), np.uint8)
+            self.currentFrame = self.camera.capture_array()
+
+      def start(self):
+            self.t1 = time.time()
+            Thread(target=self.captureImage, args=()).start()
+            return self
+
+      def captureImage(self):
+            # Continuously capture frames
+            while True:
+                  if self.cameraStopped:
+                        return
+                  # Capture current frame
+                  self.currentFrame = self.camera.capture_array()
+                  self.frame_id += 1
+
+      def getCurrentFrame(self):
+            self.imgFlip = cv2.resize(self.currentFrame, (410, 308))
+            imgRGB = cv2.rotate(self.imgFlip, cv2.ROTATE_180)
+            imgHSV = cv2.cvtColor(imgRGB, cv2.COLOR_BGR2HSV)  # Convert to HSV
+            RobotView = imgRGB.copy()  # Preserve the original image
+            return imgRGB, imgHSV, RobotView
+      
+      def getFrameID(self):
+            return self.frame_id
+      
+      def DisplayFrame(self, frame_id, FPS=False, frame=None, frame1=None, frame2=None, frame3=None, frame4=None):
+            if frame_id != self.prev_frame_id:
+                  if FPS:
+                        fps = 1.0 / (time.time() - self.t1)  # calculate frame rate
+                        self.t1 = time.time()
+                        cv2.putText(frame, f'{int(fps)}', (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 100), 2)  # Display the FPS on the screen
+                  
+                  cv2.imshow('Frame', frame)
+                  
+                  if frame1 is not None:
+                        cv2.imshow('Frame1', frame1)
+                  if frame2 is not None:
+                        cv2.imshow('Frame2', frame2)
+                  if frame3 is not None:
+                        cv2.imshow('Frame3', frame3)
+                  if frame4 is not None:
+                        cv2.imshow('Frame4', frame4)
+                  
+                  self.prev_frame_id = frame_id
+
+            
+
+      def stop(self):
+            self.cameraStopped = True
+            
+      def __del__(self):
+            # There is no release method in picamera2, so stop the camera instead
+            self.camera.stop()
+            cv2.destroyAllWindows()

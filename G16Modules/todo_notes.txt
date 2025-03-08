@@ -1,0 +1,7 @@
+consider subtracting radius from yellow line or other way to consuider the length of the robot
+
+we get stuck looking into a corner
+we get stuck looking at a corner when we are close enough to make all directions unsafe but the edge is on the wrong side so we keep looking at the edge as the furthest point and never see the safe directions.
+In both these cases the problem is that the direction of the furthest point is not always helpful to face towards in hope of finding a safe direction to move in. Especially when the point is already near the center of the screen, we should easily be able to tell that we should start looking somewhere else to find a safe direction to move.
+
+0.2 radius is too big but I shouold investigate all the posisble effects of lowering it 
